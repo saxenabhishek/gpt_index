@@ -5,7 +5,15 @@ from typing import List
 
 from openai.embeddings_utils import cosine_similarity, get_embedding
 
+import numpy as np
+from numpy.linalg import norm
+
 from gpt_index.embeddings.base import EMB_TYPE, BaseEmbedding
+
+
+from transformers import AutoTokenizer, AutoModel
+import torch
+import torch.nn.functional as F
 
 
 class OpenAIEmbeddingMode(str, Enum):
@@ -100,3 +108,40 @@ class OpenAIEmbedding(BaseEmbedding):
     def similarity(self, embedding1: EMB_TYPE, embedding2: EMB_TYPE) -> float:
         """Get embedding similarity."""
         return cosine_similarity(embedding1, embedding2)
+
+
+class Embedding(BaseEmbedding):
+    def __init__(self) -> None:
+        super().__init__()
+        self.tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+        self.model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+
+    def _mean_pooling(self, model_output, attention_mask):
+        token_embeddings = model_output[0]  # First element of model_output contains all token embeddings
+        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+        return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+
+    def get_embedding(self, query: str):
+        encoded_input = self.tokenizer(query, padding=True, truncation=True, return_tensors="pt")
+
+        with torch.no_grad():
+            model_output = self.model(**encoded_input)
+
+        sentence_embeddings = self._mean_pooling(model_output, encoded_input["attention_mask"])
+
+        sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=1)
+
+        return sentence_embeddings[0].tolist()
+
+    def get_query_embedding(self, query: str) -> List[float]:
+        return self.get_embedding(query)
+
+    def get_text_embedding(self, query: str) -> List[float]:
+        return self.get_embedding(query)
+
+    def similarity(self, A: EMB_TYPE, B: EMB_TYPE) -> float:
+        return np.dot(A, B) / (norm(A) * norm(B))
+
+
+# ! Monkey patching
+OpenAIEmbedding = Embedding
